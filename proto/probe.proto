@@ -1,0 +1,5 @@
+syntax = "proto3";
+package meshprobe;
+service Probe { rpc Ping (PingRequest) returns (PingReply); }
+message PingRequest { uint64 sequence = 1; }
+message PingReply { uint64 sequence = 1; }

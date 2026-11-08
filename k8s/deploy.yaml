@@ -1,0 +1,156 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: network-probe
+  namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: network-probe
+  namespace: monitoring
+rules:
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: network-probe
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: network-probe
+subjects:
+  - kind: ServiceAccount
+    name: network-probe
+    namespace: monitoring
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: network-probe
+  namespace: monitoring
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    app: network-probe
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: grpc
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: network-probe
+  namespace: monitoring
+spec:
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 100%
+  selector:
+    matchLabels:
+      app: network-probe
+  template:
+    metadata:
+      labels:
+        app: network-probe
+    spec:
+      serviceAccountName: network-probe
+      imagePullSecrets:
+        - name: regcred
+      terminationGracePeriodSeconds: 10
+      tolerations:
+        - key: dedicated
+          operator: Equal
+          value: milvus
+          effect: NoSchedule
+        - key: dedicated
+          operator: Equal
+          value: scylla
+          effect: NoSchedule
+        - key: dedicated
+          operator: Equal
+          value: recs
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node.deckhouse.io/group
+                    operator: In
+                    values:
+                      - milvus
+#                      - scylla
+                      - worker
+                      - recs
+      containers:
+        - name: probe
+          image: this-app
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: grpc
+              containerPort: 8080
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            periodSeconds: 5
+          resources:
+            requests:
+              cpu: 1
+              memory: 64Mi
+            limits:
+              cpu: 4
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: network-probe-metrics
+  namespace: monitoring
+  labels:
+    app: network-probe
+spec:
+  selector:
+    app: network-probe
+  ports:
+    - name: metrics
+      port: 9090
+      targetPort: metrics
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: network-probe
+  namespace: monitoring
+  labels:
+    prometheus: main
+spec:
+  selector:
+    matchLabels:
+      app: network-probe
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
